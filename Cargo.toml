@@ -4,8 +4,8 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-derive_more = { version="2.0.1", features = ["debug"] }
+derive_more = { version="2.1.1", features = ["debug"] }
 lazy_static = "1.5.0"
-rodio = "0.21.1"
-tokio = { version="1.48.0", features=["full"] }
-tokio-util = "0.7.17"
+rodio = "0.22.2"
+tokio = { version="1.50.0", features=["full"] }
+tokio-util = "0.7.18"

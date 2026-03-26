@@ -14,8 +14,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::{cell::{Cell, RefCell}, collections::HashMap, rc::Rc, sync::{Arc, Mutex}, time::Duration};
-use rodio::{OutputStream, OutputStreamBuilder, Sink};
+use std::{cell::{Cell, RefCell}, collections::HashMap, num::NonZero, rc::Rc, sync::{Arc, Mutex}, time::Duration};
+use rodio::{MixerDeviceSink, DeviceSinkBuilder, Player};
 use tokio::runtime::Runtime;
 use std::f32::consts::PI;
 use tokio_util::sync::CancellationToken;
@@ -128,9 +128,9 @@ impl WaveGenerator {
 #[derive(Clone, Debug)]
 pub struct MorsePlayer {
     #[debug(skip)]
-    _stream: Rc<OutputStream>,
+    _stream: Rc<MixerDeviceSink>,
     #[debug(skip)]
-    sink: Arc<Mutex<Sink>>,
+    sink: Arc<Mutex<Player>>,
     cancellation_token: Rc<RefCell<CancellationToken>>,
     actions: Rc<RefCell<HashMap<char, (u8, u32)>>>,
 }
@@ -138,8 +138,8 @@ pub struct MorsePlayer {
 impl MorsePlayer {
     #[inline]
     pub fn new() -> MorsePlayer {
-        let stream = OutputStreamBuilder::open_default_stream().unwrap();
-        let sink = Sink::connect_new(stream.mixer());
+        let stream = DeviceSinkBuilder::open_default_sink().unwrap();
+        let sink = Player::connect_new(stream.mixer());
         sink.set_volume(0.5);
         let mut morse_delays = HashMap::new();
         morse_delays.insert('.', (0, 1));
@@ -246,7 +246,7 @@ impl MorsePlayer {
     fn play_audio(
         text: &Vec<char>,
         text_type: TextType,
-        sink: &Arc<Mutex<Sink>>,
+        sink: &Arc<Mutex<Player>>,
         cancellation_token: &CancellationToken,
         actions: HashMap<char, (u8, u32)>,
         frequency: f32,
@@ -305,7 +305,11 @@ impl MorsePlayer {
                             }
                         }
                     }
-                    sink.lock().unwrap().append(rodio::buffer::SamplesBuffer::new(1, sample_rate, sound_signal.to_vec()));
+                    sink.lock().unwrap().append(rodio::buffer::SamplesBuffer::new(
+                        NonZero::new(1).unwrap(),
+                        NonZero::new(sample_rate).unwrap(),
+                        sound_signal.to_vec()
+                    ));
                     samples_duration = Duration::from_secs_f64(sound_signal.len() as f64 / sample_rate as f64);
                     sound_signal.clear();
                 }

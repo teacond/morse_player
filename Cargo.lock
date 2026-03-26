@@ -402,7 +402,7 @@ dependencies = [
 
 [[package]]
 name = "morse_player"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "derive_more",
  "lazy_static",

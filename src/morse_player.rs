@@ -130,7 +130,7 @@ pub struct MorsePlayer {
     #[debug(skip)]
     _stream: Rc<MixerDeviceSink>,
     #[debug(skip)]
-    sink: Arc<Mutex<Player>>,
+    player: Arc<Mutex<Player>>,
     cancellation_token: Rc<RefCell<CancellationToken>>,
     actions: Rc<RefCell<HashMap<char, (u8, u32)>>>,
 }
@@ -150,7 +150,7 @@ impl MorsePlayer {
 
         MorsePlayer {
             _stream: Rc::new(stream),
-            sink: Arc::new(Mutex::new(sink)),
+            player: Arc::new(Mutex::new(sink)),
             cancellation_token: Rc::new(RefCell::new(CancellationToken::new())),
             actions: Rc::new(RefCell::new(morse_delays)),
         }
@@ -164,23 +164,24 @@ impl MorsePlayer {
         let text_preview = Self::gen_audio_prev_vec(text);
 
         let (duration, timings) = Self::get_timings(
-            &text_preview,
+            text_preview,
             text_type,
             speed,
             &self.actions.borrow(),
         );
+
         return (duration, timings)
     }
 
     #[inline]
     pub fn set_volume(&self, volume: f32) {
-        self.sink.lock().unwrap().set_volume(volume);
+        self.player.lock().unwrap().set_volume(volume);
     }
 
     #[inline]
     pub fn stop(&self) {
         self.cancellation_token.borrow().cancel();
-        self.sink.lock().unwrap().clear();
+        self.player.lock().unwrap().clear();
     }
 
     #[inline]
@@ -188,21 +189,21 @@ impl MorsePlayer {
         self.actions.borrow_mut().insert('$', (1, delay));
         self.actions.borrow_mut().insert('/', (1, (delay as f32 * 2.3333) as u32));
 
-        let sink = self.sink.clone();
+        let player = self.player.clone();
         let actions = self.actions.borrow().clone();
         let cancellation_token = CancellationToken::new();
         *self.cancellation_token.borrow_mut() = cancellation_token.clone();
 
-        sink.lock().unwrap().play();
+        player.lock().unwrap().play();
 
         let text_preview = Self::gen_audio_prev_vec(text);
 
         std::thread::spawn(move || {
             Self::play_audio(
-                &text_preview,
+                text_preview,
                 text_type,
-                &sink,
-                &cancellation_token,
+                player,
+                cancellation_token,
                 actions,
                 frequency,
                 sample_rate,
@@ -244,10 +245,10 @@ impl MorsePlayer {
     }
 
     fn play_audio(
-        text: &Vec<char>,
+        text: Vec<char>,
         text_type: TextType,
-        sink: &Arc<Mutex<Player>>,
-        cancellation_token: &CancellationToken,
+        player: Arc<Mutex<Player>>,
+        cancellation_token: CancellationToken,
         actions: HashMap<char, (u8, u32)>,
         frequency: f32,
         sample_rate: u32,
@@ -297,7 +298,7 @@ impl MorsePlayer {
                     if cancellation_token.is_cancelled() {
                         return
                     }
-                    if sink.lock().unwrap().len() > SINK_BUFFER_SIZE as usize {
+                    if player.lock().unwrap().len() > SINK_BUFFER_SIZE as usize {
                         tokio::select! {
                             _ = tokio::time::sleep(samples_duration) => { }
                             _ = cancellation_token.cancelled() => {
@@ -305,7 +306,7 @@ impl MorsePlayer {
                             }
                         }
                     }
-                    sink.lock().unwrap().append(rodio::buffer::SamplesBuffer::new(
+                    player.lock().unwrap().append(rodio::buffer::SamplesBuffer::new(
                         NonZero::new(1).unwrap(),
                         NonZero::new(sample_rate).unwrap(),
                         sound_signal.to_vec()
@@ -362,7 +363,7 @@ impl MorsePlayer {
     }
 
     fn get_timings(
-        audio_prev_vec: &Vec<char>,
+        audio_prev_vec: Vec<char>,
         text_type: TextType,
         speed: u32,
         actions: &HashMap<char, (u8, u32)>,
@@ -380,7 +381,7 @@ impl MorsePlayer {
                     }
                     _none => { },
                 }
-                if *element == '^' {
+                if element == '^' {
                     timings.push(duration);
                 }
             }

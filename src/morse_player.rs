@@ -1,5 +1,5 @@
 // morse_player.rs
-// Copyright (C) 2025  Jaŭhien Lavonćjeŭ <jauhien.lavoncjeu@gmail.com>
+// Copyright (C) 2025-2026  Jaŭhien Lavonćjeŭ <jauhien.lavoncjeu@gmail.com>
 //
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -14,9 +14,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::{cell::RefCell, collections::HashMap, rc::Rc, sync::{Arc, Mutex}, time::Duration};
-use rodio::{OutputStream, OutputStreamBuilder, Sink};
-use ndarray::Array1;
+use std::{cell::{Cell, RefCell}, collections::HashMap, num::NonZero, rc::Rc, sync::{Arc, Mutex}, time::Duration};
+use rodio::{MixerDeviceSink, DeviceSinkBuilder, Player};
 use tokio::runtime::Runtime;
 use std::f32::consts::PI;
 use tokio_util::sync::CancellationToken;
@@ -64,11 +63,74 @@ pub enum WaveType {
 }
 
 #[derive(Clone, Debug)]
+struct WaveGenerator {
+    wave_type: WaveType,
+    phase: Cell<f32>,
+    phase_inc: f32,
+    max_k: usize
+}
+
+impl WaveGenerator {
+    pub fn new(wave_type: WaveType, frequency: f32, sample_rate: u32) -> WaveGenerator {
+        WaveGenerator {
+            wave_type: wave_type,
+            phase: Cell::new(0.0),
+            phase_inc: 2.0 * PI * frequency / sample_rate as f32,
+            max_k: (sample_rate as f32 / (2.0 * frequency)).floor() as usize,
+        }
+    }
+
+    #[inline]
+    pub fn next(&self) -> f32 {
+        let mut sample = 0.0;
+        match self.wave_type {
+            WaveType::Square => {
+                for k in 1..=self.max_k {
+                    let n = (2 * k - 1) as f32;
+                    sample += (self.phase.get() * n).sin() / n;
+                }
+                sample *= 4.0 / PI;
+            }
+            WaveType::Triangle => {
+                let mut sign: f32 = 1.0;
+                for k in 0..=self.max_k-1 {
+                    let n = 2 * k + 1;
+                    sample += sign * ((self.phase.get() * n as f32).sin() / n.pow(2) as f32);
+                    sign = -sign;
+                }
+                sample *= 8.0 / PI.powi(2);
+            }
+            WaveType::Sawtooth => {
+                let mut sign: f32 = -1.0;
+                for k in 1..=self.max_k {
+                    sample += sign * ((self.phase.get() * k as f32).sin() / k as f32);
+                    sign = -sign;
+                }
+                sample *= -2.0 / PI;
+            }
+            WaveType::Sine => {
+                sample = self.phase.get().sin();
+            }
+        };
+
+        self.skip_samples(1);
+
+        sample
+    }
+
+    #[inline]
+    fn skip_samples(&self, n: usize) {
+        self.phase.set((self.phase.get() + n as f32 * self.phase_inc) % (2.0 * PI));
+    }
+}
+
+
+#[derive(Clone, Debug)]
 pub struct MorsePlayer {
     #[debug(skip)]
-    _stream: Rc<OutputStream>,
+    _stream: Rc<MixerDeviceSink>,
     #[debug(skip)]
-    sink: Arc<Mutex<Sink>>,
+    player: Arc<Mutex<Player>>,
     cancellation_token: Rc<RefCell<CancellationToken>>,
     actions: Rc<RefCell<HashMap<char, (u8, u32)>>>,
 }
@@ -76,8 +138,8 @@ pub struct MorsePlayer {
 impl MorsePlayer {
     #[inline]
     pub fn new() -> MorsePlayer {
-        let stream = OutputStreamBuilder::open_default_stream().unwrap();
-        let sink = Sink::connect_new(stream.mixer());
+        let stream = DeviceSinkBuilder::open_default_sink().unwrap();
+        let sink = Player::connect_new(stream.mixer());
         sink.set_volume(0.5);
         let mut morse_delays = HashMap::new();
         morse_delays.insert('.', (0, 1));
@@ -88,7 +150,7 @@ impl MorsePlayer {
 
         MorsePlayer {
             _stream: Rc::new(stream),
-            sink: Arc::new(Mutex::new(sink)),
+            player: Arc::new(Mutex::new(sink)),
             cancellation_token: Rc::new(RefCell::new(CancellationToken::new())),
             actions: Rc::new(RefCell::new(morse_delays)),
         }
@@ -102,23 +164,24 @@ impl MorsePlayer {
         let text_preview = Self::gen_audio_prev_vec(text);
 
         let (duration, timings) = Self::get_timings(
-            &text_preview,
+            text_preview,
             text_type,
             speed,
             &self.actions.borrow(),
         );
+
         return (duration, timings)
     }
 
     #[inline]
     pub fn set_volume(&self, volume: f32) {
-        self.sink.lock().unwrap().set_volume(volume);
+        self.player.lock().unwrap().set_volume(volume);
     }
 
     #[inline]
     pub fn stop(&self) {
         self.cancellation_token.borrow().cancel();
-        self.sink.lock().unwrap().clear();
+        self.player.lock().unwrap().clear();
     }
 
     #[inline]
@@ -126,21 +189,21 @@ impl MorsePlayer {
         self.actions.borrow_mut().insert('$', (1, delay));
         self.actions.borrow_mut().insert('/', (1, (delay as f32 * 2.3333) as u32));
 
-        let sink = self.sink.clone();
+        let player = self.player.clone();
         let actions = self.actions.borrow().clone();
         let cancellation_token = CancellationToken::new();
         *self.cancellation_token.borrow_mut() = cancellation_token.clone();
 
-        sink.lock().unwrap().play();
+        player.lock().unwrap().play();
 
         let text_preview = Self::gen_audio_prev_vec(text);
 
         std::thread::spawn(move || {
             Self::play_audio(
-                &text_preview,
+                text_preview,
                 text_type,
-                &sink,
-                &cancellation_token,
+                player,
+                cancellation_token,
                 actions,
                 frequency,
                 sample_rate,
@@ -150,14 +213,14 @@ impl MorsePlayer {
         });
     }
 
-    fn apply_fade_in(samples: &mut Array1<f32>, samples_count: usize) {
+    fn apply_fade_in(samples: &mut Vec<f32>, samples_count: usize) {
         for i in 0..samples_count {
             let scale = 0.5 * (1.0 - (std::f32::consts::PI * i as f32 / (samples_count as f32 - 1.0)).cos());
             samples[i] *= scale;
         }
     }
 
-    fn apply_fade_out(samples: &mut Array1<f32>, samples_count: usize) {
+    fn apply_fade_out(samples: &mut Vec<f32>, samples_count: usize) {
         let len = samples.len();
         for i in 0..samples_count {
             let scale = 0.5 * (1.0 - (std::f32::consts::PI * i as f32 / (samples_count as f32 - 1.0)).cos());
@@ -165,69 +228,27 @@ impl MorsePlayer {
         }
     }
 
-    fn get_wave(wave_type: WaveType, sample_rate: u32, frequency: f32, duration: Duration) -> Vec<f32> {
-        let samples_wave_count = sample_rate as f32 * duration.as_secs_f32();
-        let t_wave = Array1::linspace(
-            0.0,
-            duration.as_secs_f32() - 1.0 / sample_rate as f32,
-            samples_wave_count as usize
-        );
-        let two_pi_f = 2.0 * PI * frequency;
-        let nyquist = sample_rate as f32 / 2.0;
-        let max_k = ((nyquist / frequency + 1.0) / 2.0).floor() as usize;
-        
-        let mut wave = match wave_type {
-            WaveType::Square => {
-                let mut wave = Array1::zeros(t_wave.len());
-                for k in 1..=max_k {
-                    let harmonic = (2 * k - 1) as f32;
-                    wave = wave + (two_pi_f * harmonic * &t_wave).mapv(f32::sin) / harmonic;
-                }
-                wave * (4.0 / PI)
-            }
-            WaveType::Triangle => {
-                let mut wave = Array1::zeros(t_wave.len());
-                for k in 0..max_k-1 {
-                    let n = (2 * k + 1) as f32;
-                    wave = wave + ((-1i32).pow(k as u32) as f32 / n.powi(2)) * (two_pi_f * n * &t_wave).mapv(f32::sin);
-                }
-                wave * (8.0 / PI.powi(2))
-            }
-            WaveType::Sawtooth => {
-                let mut wave = Array1::zeros(t_wave.len());
-                for k in 1..=max_k {
-                    wave = wave + (-1i32).pow(k as  u32) as f32 * ((two_pi_f * k as f32 * &t_wave).mapv(f32::sin) / k as f32);
-                }
-                wave * (-2.0 / PI)
-            }
-            WaveType::Sine => {
-                (2.0 * PI * frequency * t_wave).mapv(f32::sin)
-            }
-        };
+    fn get_wave(generator: &WaveGenerator, sample_rate: u32, duration: Duration) -> Vec<f32> {
+        let samples_wave_count = (sample_rate as f32 * duration.as_secs_f32()).round() as usize;
+        let mut wave: Vec<f32> = (0..samples_wave_count).map(|_| generator.next()).collect();
 
-        Self::apply_fade_in(&mut wave, (sample_rate as f32 * FADE_IN) as usize);
-        Self::apply_fade_out(&mut wave, (sample_rate as f32 * FADE_OUT) as usize);
+        Self::apply_fade_in(&mut wave, (sample_rate as f32 * FADE_IN).round() as usize);
+        Self::apply_fade_out(&mut wave, (sample_rate as f32 * FADE_OUT).round() as usize);
 
-        // Wave normalization
-        let max_amplitude = wave.iter().map(|x| x.abs()).fold(0.0, f32::max);
-        if max_amplitude > 0.0 {
-            wave /= max_amplitude;
-        }
-
-        wave.to_vec()
+        wave
     }
 
-    fn get_silence(sample_rate: u32, duration: Duration) -> Vec<f32> {
-        let samples_count = sample_rate as f32 * duration.as_secs_f32();
-        let silence: Vec<f32> = vec![0.0; samples_count as usize];
-        silence
+    fn get_silence(generator: &WaveGenerator, sample_rate: u32, duration: Duration) -> Vec<f32> {
+        let samples_count = (sample_rate as f32 * duration.as_secs_f32()).round() as usize;
+        generator.skip_samples(samples_count);
+        vec![0.0; samples_count]
     }
 
     fn play_audio(
-        text: &Vec<char>,
+        text: Vec<char>,
         text_type: TextType,
-        sink: &Arc<Mutex<Sink>>,
-        cancellation_token: &CancellationToken,
+        player: Arc<Mutex<Player>>,
+        cancellation_token: CancellationToken,
         actions: HashMap<char, (u8, u32)>,
         frequency: f32,
         sample_rate: u32,
@@ -236,37 +257,37 @@ impl MorsePlayer {
     ) {
         let rt = Runtime::new().unwrap();
         rt.block_on(async {
+            let generator = WaveGenerator::new(wave_type, frequency, sample_rate);
             let mut sound_signal = Vec::<f32>::new();
-            let dot_duration = Self::get_dot_duration(text_type, speed as f64);
-            let short_wave_length = actions.get(&'.').unwrap().1;
-            let long_wave_length = actions.get(&'-').unwrap().1;
-            let short_wave = Self::get_wave(wave_type, sample_rate, frequency, dot_duration * short_wave_length);
-            let long_wave = Self::get_wave(wave_type, sample_rate, frequency, dot_duration * long_wave_length);
-            let short_silence = Self::get_silence(sample_rate, dot_duration * actions.get(&'*').unwrap().1 as u32);
-            let medium_silence = Self::get_silence(sample_rate, dot_duration * actions.get(&'$').unwrap().1 as u32);
-            let long_silence = Self::get_silence(sample_rate, dot_duration * actions.get(&'/').unwrap().1 as u32);
             let mut samples_duration = Duration::from_secs(0);
+
+            let dot_duration = Self::get_dot_duration(text_type, speed as f64);
+            let short_wave_length = dot_duration * actions.get(&'.').unwrap().1;
+            let long_wave_length = dot_duration * actions.get(&'-').unwrap().1;
+            let short_silence_length = dot_duration * actions.get(&'*').unwrap().1;
+            let medium_silence_length = dot_duration * actions.get(&'$').unwrap().1;
+            let long_silence_length = dot_duration * actions.get(&'/').unwrap().1;
 
             for (i, element) in text.iter().enumerate() {
                 match actions.get(&element) {
                     Some(action) => {
                         if action.0 == 0 {
                             if element == &'.' {
-                                sound_signal.extend(short_wave.clone());
+                                sound_signal.extend(Self::get_wave(&generator, sample_rate, short_wave_length));
                             }
                             else {
-                                sound_signal.extend(long_wave.clone());
+                                sound_signal.extend(Self::get_wave(&generator, sample_rate, long_wave_length));
                             }
                         }
                         else if action.0 == 1 {
                             if element == &'*' { // Pause between dots or dashes
-                                sound_signal.extend(short_silence.clone());
+                                sound_signal.extend(Self::get_silence(&generator, sample_rate, short_silence_length));
                             }
                             else if element == &'$' { // Pause between characters
-                                sound_signal.extend(medium_silence.clone());
+                                sound_signal.extend(Self::get_silence(&generator, sample_rate, medium_silence_length));
                             }
                             else { // Pause between words
-                                sound_signal.extend(long_silence.clone());
+                                sound_signal.extend(Self::get_silence(&generator, sample_rate, long_silence_length));
                             }
                         }
                     },
@@ -277,7 +298,7 @@ impl MorsePlayer {
                     if cancellation_token.is_cancelled() {
                         return
                     }
-                    if sink.lock().unwrap().len() > SINK_BUFFER_SIZE as usize {
+                    if player.lock().unwrap().len() > SINK_BUFFER_SIZE as usize {
                         tokio::select! {
                             _ = tokio::time::sleep(samples_duration) => { }
                             _ = cancellation_token.cancelled() => {
@@ -285,7 +306,11 @@ impl MorsePlayer {
                             }
                         }
                     }
-                    sink.lock().unwrap().append(rodio::buffer::SamplesBuffer::new(1, sample_rate, sound_signal.to_vec()));
+                    player.lock().unwrap().append(rodio::buffer::SamplesBuffer::new(
+                        NonZero::new(1).unwrap(),
+                        NonZero::new(sample_rate).unwrap(),
+                        sound_signal.to_vec()
+                    ));
                     samples_duration = Duration::from_secs_f64(sound_signal.len() as f64 / sample_rate as f64);
                     sound_signal.clear();
                 }
@@ -338,12 +363,11 @@ impl MorsePlayer {
     }
 
     fn get_timings(
-        audio_prev_vec: &Vec<char>,
+        audio_prev_vec: Vec<char>,
         text_type: TextType,
         speed: u32,
         actions: &HashMap<char, (u8, u32)>,
-        ) 
-        -> (Duration, Vec<Duration>) {
+        ) -> (Duration, Vec<Duration>) {
             let mut timings = Vec::<Duration>::new();
             let mut duration = Duration::from_secs(0);
             let dot_duration = Self::get_dot_duration(text_type, speed as f64);
@@ -357,7 +381,7 @@ impl MorsePlayer {
                     }
                     _none => { },
                 }
-                if *element == '^' {
+                if element == '^' {
                     timings.push(duration);
                 }
             }

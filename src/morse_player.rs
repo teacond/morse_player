@@ -63,7 +63,7 @@ pub enum WaveType {
 }
 
 #[derive(Clone, Debug)]
-pub struct WaveGenerator {
+struct WaveGenerator {
     wave_type: WaveType,
     phase: Cell<f32>,
     phase_inc: f32,

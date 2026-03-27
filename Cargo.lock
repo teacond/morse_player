@@ -407,6 +407,7 @@ dependencies = [
  "derive_more",
  "lazy_static",
  "rodio",
+ "serde_json",
  "tokio",
  "tokio-util",
 ]

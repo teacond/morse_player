@@ -22,20 +22,10 @@ use tokio_util::sync::CancellationToken;
 use derive_more::Debug;
 use lazy_static::lazy_static;
 
+const JSON_DATA: &str = include_str!("morse.json");
+
 lazy_static! {
-    pub static ref MORSE_CODE: HashMap<char, &'static str> = {
-        let morse_map: HashMap<char, &str> = [
-            ('A', ".-"), ('B', "-..."), ('C', "-.-."), ('D', "-.."), ('E', "."),
-            ('F', "..-."), ('G', "--."), ('H', "...."), ('I', ".."), ('J', ".---"),
-            ('K', "-.-"), ('L', ".-.."), ('M', "--"), ('N', "-."), ('O', "---"),
-            ('P', ".--."), ('Q', "--.-"), ('R', ".-."), ('S', "..."), ('T', "-"),
-            ('U', "..-"), ('V', "...-"), ('W', ".--"), ('X', "-..-"), ('Y', "-.--"),
-            ('Z', "--.."), ('0', "-----"), ('1', ".----"), ('2', "..---"), ('3', "...--"),
-            ('4', "....-"), ('5', "....."), ('6', "-...."), ('7', "--..."), ('8', "---.."),
-            ('9', "----."), ('.', ".-.-.-"), (',', "--..--"), ('/', "-..-."), ('?', "..--.."),
-            ('=', "-...-"), ('+', ".-.-.")].iter().cloned().collect();
-        morse_map
-    };
+    pub static ref MORSE_CODE: HashMap<char, String> = serde_json::from_str(JSON_DATA).unwrap();
 }
 
 const LETTERS_DURATION: f64 = 0.05;

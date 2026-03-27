@@ -14,19 +14,16 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::{cell::{Cell, RefCell}, collections::HashMap, num::NonZero, rc::Rc, sync::{Arc, Mutex}, time::Duration};
+use std::{cell::{Cell, RefCell}, collections::HashMap, num::NonZero, rc::Rc, sync::{Arc, Mutex, LazyLock}, time::Duration};
 use rodio::{MixerDeviceSink, DeviceSinkBuilder, Player};
 use tokio::runtime::Runtime;
 use std::f32::consts::PI;
 use tokio_util::sync::CancellationToken;
 use derive_more::Debug;
-use lazy_static::lazy_static;
 
-const JSON_DATA: &str = include_str!("morse.json");
-
-lazy_static! {
-    pub static ref MORSE_CODE: HashMap<char, String> = serde_json::from_str(JSON_DATA).unwrap();
-}
+pub static MORSE_CODE: LazyLock<HashMap<char, String>> = LazyLock::new(|| {
+    serde_json::from_str(include_str!("morse.json")).unwrap()
+});
 
 const LETTERS_DURATION: f64 = 0.05;
 const DIGITS_DURATION: f64 = 0.034;

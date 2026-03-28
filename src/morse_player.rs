@@ -16,12 +16,13 @@
 
 use std::{cell::{Cell, RefCell}, collections::HashMap, num::NonZero, rc::Rc, sync::{Arc, Mutex, LazyLock}, time::Duration};
 use rodio::{MixerDeviceSink, DeviceSinkBuilder, Player};
+use strum_macros::{Display, EnumString};
 use tokio::runtime::Runtime;
 use std::f32::consts::PI;
 use tokio_util::sync::CancellationToken;
 use derive_more::Debug;
 
-pub static MORSE_CODE: LazyLock<HashMap<char, String>> = LazyLock::new(|| {
+pub static MORSE_CODE: LazyLock<HashMap<String, HashMap<char, String>>> = LazyLock::new(|| {
     serde_json::from_str(include_str!("morse.json")).unwrap()
 });
 
@@ -32,7 +33,7 @@ const FADE_IN: f32 = 0.0002;
 const FADE_OUT: f32 = 0.0002;
 const SINK_BUFFER_SIZE: u32 = 3;
 
-#[derive(PartialEq, Debug, Default, Clone, Copy)]
+#[derive(PartialEq, Default, Clone, Copy)]
 pub enum TextType {
     #[default]
     Letters,
@@ -40,7 +41,7 @@ pub enum TextType {
     Mixed,
 }
 
-#[derive(PartialEq, Debug, Default, Clone, Copy)]
+#[derive(PartialEq, Default, Clone, Copy)]
 pub enum WaveType {
     #[default]
     Square,
@@ -49,7 +50,18 @@ pub enum WaveType {
     Sine
 }
 
-#[derive(Clone, Debug)]
+#[derive(PartialEq, Display, Default, Clone, Copy, EnumString)]
+#[strum(serialize_all = "kebab_case")]
+pub enum Alphabet {
+    #[default]
+    Latin,
+    Cyrillic,
+    Greek,
+    Hebrew,
+    Persian
+}
+
+#[derive(Clone)]
 struct WaveGenerator {
     wave_type: WaveType,
     phase: Cell<f32>,
@@ -120,13 +132,15 @@ pub struct MorsePlayer {
     player: Arc<Mutex<Player>>,
     cancellation_token: Rc<RefCell<CancellationToken>>,
     actions: Rc<RefCell<HashMap<char, (u8, u32)>>>,
+    alphabet: Rc<RefCell<HashMap<char, String>>>
 }
 
 impl MorsePlayer {
     #[inline]
     pub fn new() -> MorsePlayer {
-        let stream = DeviceSinkBuilder::open_default_sink().unwrap();
+        let mut stream = DeviceSinkBuilder::open_default_sink().unwrap();
         let sink = Player::connect_new(stream.mixer());
+        stream.log_on_drop(false);
         sink.set_volume(0.5);
         let mut morse_delays = HashMap::new();
         morse_delays.insert('.', (0, 1));
@@ -135,12 +149,17 @@ impl MorsePlayer {
         morse_delays.insert('$', (1, 3));
         morse_delays.insert('/', (1, 7));
 
-        MorsePlayer {
+        let morse_player = MorsePlayer {
             _stream: Rc::new(stream),
             player: Arc::new(Mutex::new(sink)),
             cancellation_token: Rc::new(RefCell::new(CancellationToken::new())),
             actions: Rc::new(RefCell::new(morse_delays)),
-        }
+            alphabet: Rc::new(RefCell::new(HashMap::new()))
+        };
+
+        morse_player.set_alphabet(Alphabet::Latin);
+
+        morse_player
     }
 
     #[inline]
@@ -148,7 +167,7 @@ impl MorsePlayer {
         self.actions.borrow_mut().insert('$', (1, delay));
         self.actions.borrow_mut().insert('/', (1, (delay as f32 * 2.3333) as u32));
 
-        let text_preview = Self::gen_audio_prev_vec(text);
+        let text_preview = Self::gen_audio_prev_vec(&self.alphabet.borrow(), text);
 
         let (duration, timings) = Self::get_timings(
             text_preview,
@@ -163,6 +182,14 @@ impl MorsePlayer {
     #[inline]
     pub fn set_volume(&self, volume: f32) {
         self.player.lock().unwrap().set_volume(volume);
+    }
+
+    #[inline]
+    pub fn set_alphabet(&self, alphabet: Alphabet) {
+        *self.alphabet.borrow_mut() = MORSE_CODE.get(&alphabet.to_string()).unwrap().clone();
+        if alphabet != Alphabet::Latin {
+            self.alphabet.borrow_mut().extend(MORSE_CODE.get(&Alphabet::Latin.to_string()).unwrap().clone());
+        }
     }
 
     #[inline]
@@ -183,7 +210,7 @@ impl MorsePlayer {
 
         player.lock().unwrap().play();
 
-        let text_preview = Self::gen_audio_prev_vec(text);
+        let text_preview = Self::gen_audio_prev_vec(&self.alphabet.borrow(), text);
 
         std::thread::spawn(move || {
             Self::play_audio(
@@ -305,12 +332,12 @@ impl MorsePlayer {
         });
     }
 
-    fn gen_audio_prev_vec(text: &str) -> Vec<char> {
+    fn gen_audio_prev_vec(alphabet: &HashMap<char, String>, text: &str) -> Vec<char> {
         let mut audio_vec = Vec::<char>::new();
         let text_vec: Vec<char> = text.chars().collect();
 
         for (i, element) in text_vec.iter().enumerate() {
-            if let Some(morse_code) = MORSE_CODE.get(&element) {
+            if let Some(morse_code) = alphabet.get(&element) {
                 for (n, morse_char) in morse_code.chars().enumerate() {
                     audio_vec.push(morse_char);
                     if n+1 != morse_code.len() {

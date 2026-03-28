@@ -58,6 +58,7 @@ pub enum Alphabet {
     Cyrillic,
     Greek,
     Hebrew,
+    Arabic,
     Persian
 }
 

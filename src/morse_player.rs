@@ -229,6 +229,10 @@ impl MorsePlayer {
         });
     }
 
+    pub fn get_morse(&self, letter: &char) -> String {
+        self.alphabet.borrow().get(letter).unwrap().clone()
+    }
+
     fn apply_fade_in(samples: &mut Vec<f32>, samples_count: usize) {
         for i in 0..samples_count {
             let scale = 0.5 * (1.0 - (std::f32::consts::PI * i as f32 / (samples_count as f32 - 1.0)).cos());

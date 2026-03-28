@@ -59,7 +59,8 @@ pub enum Alphabet {
     Greek,
     Hebrew,
     Arabic,
-    Persian
+    Persian,
+    Korean
 }
 
 #[derive(Clone)]

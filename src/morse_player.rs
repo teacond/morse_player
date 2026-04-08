@@ -15,15 +15,25 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use std::{cell::{Cell, RefCell}, collections::HashMap, num::NonZero, rc::Rc, sync::{Arc, Mutex, LazyLock}, time::Duration};
-use rodio::{MixerDeviceSink, DeviceSinkBuilder, Player};
+use rodio::{DeviceSinkBuilder, DeviceSinkError, MixerDeviceSink, Player};
 use strum_macros::{Display, EnumString};
 use tokio::runtime::Runtime;
 use std::f32::consts::PI;
 use tokio_util::sync::CancellationToken;
 use derive_more::Debug;
 
-pub static MORSE_CODE: LazyLock<HashMap<String, HashMap<char, String>>> = LazyLock::new(|| {
+static MORSE_CODE: LazyLock<HashMap<String, HashMap<char, String>>> = LazyLock::new(|| {
     serde_json::from_str(include_str!("morse.json")).unwrap()
+});
+
+static SIGNAL_DURATIONS: LazyLock<HashMap<SignalType, u32>> = LazyLock::new(|| {
+    let mut signal_durations = HashMap::new();
+    signal_durations.insert(SignalType::Short, 1);
+    signal_durations.insert(SignalType::Long, 3);
+    signal_durations.insert(SignalType::SilenceShort, 1);
+    signal_durations.insert(SignalType::SilenceMedium, 3);
+    signal_durations.insert(SignalType::SilenceLong, 7);
+    signal_durations
 });
 
 const LETTERS_DURATION: f64 = 0.05;
@@ -63,6 +73,15 @@ pub enum Alphabet {
     Korean
 }
 
+#[derive(PartialEq, Eq, Hash, Clone, Copy, Debug)]
+enum SignalType {
+    Short,
+    Long,
+    SilenceShort,
+    SilenceMedium,
+    SilenceLong
+}
+
 #[derive(Clone)]
 struct WaveGenerator {
     wave_type: WaveType,
@@ -81,7 +100,6 @@ impl WaveGenerator {
         }
     }
 
-    #[inline]
     pub fn next(&self) -> f32 {
         let mut sample = 0.0;
         match self.wave_type {
@@ -119,7 +137,6 @@ impl WaveGenerator {
         sample
     }
 
-    #[inline]
     fn skip_samples(&self, n: usize) {
         self.phase.set((self.phase.get() + n as f32 * self.phase_inc) % (2.0 * PI));
     }
@@ -132,87 +149,63 @@ pub struct MorsePlayer {
     _stream: Rc<MixerDeviceSink>,
     #[debug(skip)]
     player: Arc<Mutex<Player>>,
-    cancellation_token: Rc<RefCell<CancellationToken>>,
-    actions: Rc<RefCell<HashMap<char, (u8, u32)>>>,
-    alphabet: Rc<RefCell<HashMap<char, String>>>
+    cancellation_token: RefCell<CancellationToken>,
+    alphabet: RefCell<HashMap<char, String>>
 }
 
 impl MorsePlayer {
-    #[inline]
-    pub fn new() -> MorsePlayer {
-        let mut stream = DeviceSinkBuilder::open_default_sink().unwrap();
+    pub fn new() -> Result<Self, DeviceSinkError> {
+        let mut stream = DeviceSinkBuilder::open_default_sink()?;
         let sink = Player::connect_new(stream.mixer());
         stream.log_on_drop(false);
         sink.set_volume(0.5);
-        let mut morse_delays = HashMap::new();
-        morse_delays.insert('.', (0, 1));
-        morse_delays.insert('-', (0, 3));
-        morse_delays.insert('*', (1, 1));
-        morse_delays.insert('$', (1, 3));
-        morse_delays.insert('/', (1, 7));
 
         let morse_player = MorsePlayer {
             _stream: Rc::new(stream),
             player: Arc::new(Mutex::new(sink)),
-            cancellation_token: Rc::new(RefCell::new(CancellationToken::new())),
-            actions: Rc::new(RefCell::new(morse_delays)),
-            alphabet: Rc::new(RefCell::new(HashMap::new()))
+            cancellation_token: RefCell::new(CancellationToken::new()),
+            alphabet: RefCell::new(HashMap::from(MORSE_CODE.get(&Alphabet::Latin.to_string()).unwrap().clone()))
         };
 
-        morse_player.set_alphabet(Alphabet::Latin);
-
-        morse_player
+        Ok(morse_player)
     }
 
-    #[inline]
     pub fn timings(&self, text: &str, text_type: TextType, speed: u32, delay: u32) -> (Duration, Vec<Duration>) {
-        self.actions.borrow_mut().insert('$', (1, delay));
-        self.actions.borrow_mut().insert('/', (1, (delay as f32 * 2.3333) as u32));
-
-        let text_preview = Self::gen_audio_prev_vec(&self.alphabet.borrow(), text);
-
+        let signal_durations = Self::update_durations(delay); 
+        let text_preview = Self::get_morse_vec(&self.alphabet.borrow(), text);
         let (duration, timings) = Self::get_timings(
             text_preview,
             text_type,
             speed,
-            &self.actions.borrow(),
+            signal_durations,
         );
-
-        return (duration, timings)
+        (duration, timings)
     }
 
-    #[inline]
     pub fn set_volume(&self, volume: f32) {
         self.player.lock().unwrap().set_volume(volume);
     }
 
-    #[inline]
     pub fn set_alphabet(&self, alphabet: Alphabet) {
-        *self.alphabet.borrow_mut() = MORSE_CODE.get(&alphabet.to_string()).unwrap().clone();
+        *self.alphabet.borrow_mut() = MORSE_CODE.get(&Alphabet::Latin.to_string()).unwrap().clone();
         if alphabet != Alphabet::Latin {
-            self.alphabet.borrow_mut().extend(MORSE_CODE.get(&Alphabet::Latin.to_string()).unwrap().clone());
+            self.alphabet.borrow_mut().extend(MORSE_CODE.get(&alphabet.to_string()).unwrap().clone());
         }
     }
 
-    #[inline]
     pub fn stop(&self) {
         self.cancellation_token.borrow().cancel();
         self.player.lock().unwrap().clear();
     }
 
-    #[inline]
     pub fn play(&self, text: &str, text_type: TextType, speed: u32, delay: u32, frequency: f32, wave_type: WaveType, sample_rate: u32) {
-        self.actions.borrow_mut().insert('$', (1, delay));
-        self.actions.borrow_mut().insert('/', (1, (delay as f32 * 2.3333) as u32));
-
+        let text_preview = Self::get_morse_vec(&self.alphabet.borrow(), text);
+        let signal_durations = Self::update_durations(delay); 
         let player = self.player.clone();
-        let actions = self.actions.borrow().clone();
         let cancellation_token = CancellationToken::new();
         *self.cancellation_token.borrow_mut() = cancellation_token.clone();
 
         player.lock().unwrap().play();
-
-        let text_preview = Self::gen_audio_prev_vec(&self.alphabet.borrow(), text);
 
         std::thread::spawn(move || {
             Self::play_audio(
@@ -220,7 +213,7 @@ impl MorsePlayer {
                 text_type,
                 player,
                 cancellation_token,
-                actions,
+                signal_durations,
                 frequency,
                 sample_rate,
                 speed,
@@ -265,15 +258,15 @@ impl MorsePlayer {
     }
 
     fn play_audio(
-        text: Vec<char>,
+        text: Vec<SignalType>,
         text_type: TextType,
         player: Arc<Mutex<Player>>,
         cancellation_token: CancellationToken,
-        actions: HashMap<char, (u8, u32)>,
+        signal_durations: HashMap<SignalType, u32>,
         frequency: f32,
         sample_rate: u32,
         speed: u32,
-        wave_type: WaveType,
+        wave_type: WaveType
     ) {
         let rt = Runtime::new().unwrap();
         rt.block_on(async {
@@ -282,39 +275,22 @@ impl MorsePlayer {
             let mut samples_duration = Duration::from_secs(0);
 
             let dot_duration = Self::get_dot_duration(text_type, speed as f64);
-            let short_wave_length = dot_duration * actions.get(&'.').unwrap().1;
-            let long_wave_length = dot_duration * actions.get(&'-').unwrap().1;
-            let short_silence_length = dot_duration * actions.get(&'*').unwrap().1;
-            let medium_silence_length = dot_duration * actions.get(&'$').unwrap().1;
-            let long_silence_length = dot_duration * actions.get(&'/').unwrap().1;
+            let short_wave_length = dot_duration * signal_durations.get(&SignalType::Short).copied().unwrap();
+            let long_wave_length = dot_duration * signal_durations.get(&SignalType::Long).copied().unwrap();
+            let short_silence_length = dot_duration * signal_durations.get(&SignalType::SilenceShort).copied().unwrap();
+            let medium_silence_length = dot_duration * signal_durations.get(&SignalType::SilenceMedium).copied().unwrap();
+            let long_silence_length = dot_duration * signal_durations.get(&SignalType::SilenceLong).copied().unwrap();
 
             for (i, element) in text.iter().enumerate() {
-                match actions.get(&element) {
-                    Some(action) => {
-                        if action.0 == 0 {
-                            if element == &'.' {
-                                sound_signal.extend(Self::get_wave(&generator, sample_rate, short_wave_length));
-                            }
-                            else {
-                                sound_signal.extend(Self::get_wave(&generator, sample_rate, long_wave_length));
-                            }
-                        }
-                        else if action.0 == 1 {
-                            if element == &'*' { // Pause between dots or dashes
-                                sound_signal.extend(Self::get_silence(&generator, sample_rate, short_silence_length));
-                            }
-                            else if element == &'$' { // Pause between characters
-                                sound_signal.extend(Self::get_silence(&generator, sample_rate, medium_silence_length));
-                            }
-                            else { // Pause between words
-                                sound_signal.extend(Self::get_silence(&generator, sample_rate, long_silence_length));
-                            }
-                        }
-                    },
-                    _none => { },
-                }
+                match element {
+                    SignalType::Short => sound_signal.extend(Self::get_wave(&generator, sample_rate, short_wave_length)),
+                    SignalType::Long => sound_signal.extend(Self::get_wave(&generator, sample_rate, long_wave_length)),
+                    SignalType::SilenceShort => sound_signal.extend(Self::get_silence(&generator, sample_rate, short_silence_length)),
+                    SignalType::SilenceMedium => sound_signal.extend(Self::get_silence(&generator, sample_rate, medium_silence_length)),
+                    SignalType::SilenceLong => sound_signal.extend(Self::get_silence(&generator, sample_rate, long_silence_length))
+                };
 
-                if *element == '/' || i+1 == text.len() {
+                if *element == SignalType::SilenceLong || i+1 == text.len() {
                     if cancellation_token.is_cancelled() {
                         return
                     }
@@ -338,80 +314,71 @@ impl MorsePlayer {
         });
     }
 
-    fn gen_audio_prev_vec(alphabet: &HashMap<char, String>, text: &str) -> Vec<char> {
-        let mut audio_vec = Vec::<char>::new();
+    fn get_morse_vec(alphabet: &HashMap<char, String>, text: &str) -> Vec<SignalType> {
+        let mut audio_vec: Vec<SignalType> = Vec::new();
         let text_vec: Vec<char> = text.chars().collect();
 
         for (i, element) in text_vec.iter().enumerate() {
             if let Some(morse_code) = alphabet.get(&element) {
                 for (n, morse_char) in morse_code.chars().enumerate() {
-                    audio_vec.push(morse_char);
+                    match morse_char {
+                        '.' => audio_vec.push(SignalType::Short),
+                        _ => audio_vec.push(SignalType::Long)
+                    }
                     if n+1 != morse_code.len() {
-                        audio_vec.push('*');
+                        audio_vec.push(SignalType::SilenceShort);
                     }
                 }
             }
 
             if *element != ' ' && i != text_vec.len() - 1 && text_vec[i+1] != ' ' {
-                audio_vec.push('$');
+                audio_vec.push(SignalType::SilenceMedium);
             }
 
             if *element == ' ' {
-                audio_vec.push('/');
+                audio_vec.push(SignalType::SilenceLong);
             }
-
-            audio_vec.push('^');
         }
         
-        return audio_vec;
+        audio_vec
     }
 
-    fn get_dot_duration(text_type: TextType, speed: f64) -> Duration { // calculating an absolute speed
-        let speed_to_use: f64;
-        match text_type {
-            TextType::Letters => {
-                speed_to_use = LETTERS_DURATION * 100.0 / speed;
-            }
-            TextType::Digits => {
-                speed_to_use = DIGITS_DURATION * 100.0 / speed;
-            }
-            TextType::Mixed => {
-                speed_to_use = MIXED_DURATION * 100.0 / speed;
-            }
-        }
+    fn get_dot_duration(text_type: TextType, speed: f64) -> Duration { // calculates an absolute speed
+        let speed_to_use: f64 = match text_type {
+            TextType::Letters => LETTERS_DURATION * 100.0 / speed,
+            TextType::Digits => DIGITS_DURATION * 100.0 / speed,
+            TextType::Mixed => MIXED_DURATION * 100.0 / speed
+        };
         Duration::from_secs_f64(speed_to_use)
     }
 
     fn get_timings(
-        audio_prev_vec: Vec<char>,
+        audio_prev_vec: Vec<SignalType>,
         text_type: TextType,
         speed: u32,
-        actions: &HashMap<char, (u8, u32)>,
-        ) -> (Duration, Vec<Duration>) {
-            let mut timings = Vec::<Duration>::new();
-            let mut duration = Duration::from_secs(0);
-            let dot_duration = Self::get_dot_duration(text_type, speed as f64);
-            timings.push(duration);
+        signal_durations: HashMap<SignalType, u32>,
+    ) -> (Duration, Vec<Duration>) {
+        let mut timings = Vec::<Duration>::new();
+        let mut duration = Duration::from_secs(0);
+        let dot_duration = Self::get_dot_duration(text_type, speed as f64);
+        timings.push(duration);
 
-            for element in audio_prev_vec {
-                match actions.get(&element) {
-                    Some(action) => {
-                        let duration_multiplier = action.1;
-                        duration += dot_duration * duration_multiplier;
-                    }
-                    _none => { },
-                }
-                if element == '^' {
-                    timings.push(duration);
-                }
+        for element in audio_prev_vec {
+            duration += dot_duration * signal_durations.get(&element).copied().unwrap();
+            if element == SignalType::SilenceMedium || element == SignalType::SilenceLong {
+                timings.push(duration);
             }
-
-            (duration, timings)
         }
-}
 
-impl Default for MorsePlayer {
-    fn default() -> Self {
-        Self::new()
+        (duration, timings)
+    }
+
+    fn update_durations(delay: u32) -> HashMap<SignalType, u32> {
+        let mut local_signal_durations = SIGNAL_DURATIONS.clone();
+        let medium_silence_duration = SIGNAL_DURATIONS.get(&SignalType::SilenceMedium).copied().unwrap() as f64;
+        let long_silence_duration = SIGNAL_DURATIONS.get(&SignalType::SilenceLong).copied().unwrap() as f64;
+        local_signal_durations.insert(SignalType::SilenceMedium, delay);
+        local_signal_durations.insert(SignalType::SilenceLong, (delay as f64 * (long_silence_duration / medium_silence_duration)).round() as u32);
+        local_signal_durations
     }
 }

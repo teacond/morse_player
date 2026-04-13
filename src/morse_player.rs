@@ -36,9 +36,9 @@ static SIGNAL_DURATIONS: LazyLock<HashMap<SignalType, u32>> = LazyLock::new(|| {
     signal_durations
 });
 
-const LETTERS_DURATION: f64 = 0.05;
+const CODEX_DURATION: f64 = 0.05;
+const PARIS_DURATION: f64 = 0.06;
 const DIGITS_DURATION: f64 = 0.034;
-const MIXED_DURATION: f64 = 0.042;
 const FADE_IN: f32 = 0.0002;
 const FADE_OUT: f32 = 0.0002;
 const SINK_BUFFER_SIZE: u32 = 3;
@@ -71,6 +71,13 @@ pub enum Alphabet {
     Arabic,
     Persian,
     Korean
+}
+
+#[derive(PartialEq, Display, Default, Clone, Copy, Debug)]
+pub enum SpeedSystem {
+    #[default]
+    CODEX,
+    PARIS
 }
 
 #[derive(PartialEq, Eq, Hash, Clone, Copy, Debug)]
@@ -150,7 +157,8 @@ pub struct MorsePlayer {
     #[debug(skip)]
     player: Arc<Mutex<Player>>,
     cancellation_token: RefCell<CancellationToken>,
-    alphabet: RefCell<HashMap<char, String>>
+    alphabet: RefCell<HashMap<char, String>>,
+    speed_system: Cell<SpeedSystem>
 }
 
 impl MorsePlayer {
@@ -164,7 +172,8 @@ impl MorsePlayer {
             _stream: Rc::new(stream),
             player: Arc::new(Mutex::new(sink)),
             cancellation_token: RefCell::new(CancellationToken::new()),
-            alphabet: RefCell::new(HashMap::from(MORSE_CODE.get(&Alphabet::Latin.to_string()).unwrap().clone()))
+            alphabet: RefCell::new(HashMap::from(MORSE_CODE.get(&Alphabet::Latin.to_string()).unwrap().clone())),
+            speed_system: Cell::new(SpeedSystem::default())
         };
 
         Ok(morse_player)
@@ -177,6 +186,7 @@ impl MorsePlayer {
             text_preview,
             text_type,
             speed,
+            self.speed_system.get(),
             signal_durations,
         );
         (duration, timings)
@@ -184,6 +194,10 @@ impl MorsePlayer {
 
     pub fn set_volume(&self, volume: f32) {
         self.player.lock().unwrap().set_volume(volume);
+    }
+
+    pub fn set_speed_system(&self, speed_system: SpeedSystem) {
+        self.speed_system.set(speed_system);
     }
 
     pub fn set_alphabet(&self, alphabet: Alphabet) {
@@ -203,6 +217,7 @@ impl MorsePlayer {
         let signal_durations = Self::update_durations(delay); 
         let player = self.player.clone();
         let cancellation_token = CancellationToken::new();
+        let speed_system = self.speed_system.get();
         *self.cancellation_token.borrow_mut() = cancellation_token.clone();
 
         player.lock().unwrap().play();
@@ -217,6 +232,7 @@ impl MorsePlayer {
                 frequency,
                 sample_rate,
                 speed,
+                speed_system,
                 wave_type,
             );
         });
@@ -266,6 +282,7 @@ impl MorsePlayer {
         frequency: f32,
         sample_rate: u32,
         speed: u32,
+        speed_system: SpeedSystem,
         wave_type: WaveType
     ) {
         let rt = Runtime::new().unwrap();
@@ -274,7 +291,7 @@ impl MorsePlayer {
             let mut sound_signal = Vec::<f32>::new();
             let mut samples_duration = Duration::from_secs(0);
 
-            let dot_duration = Self::get_dot_duration(text_type, speed as f64);
+            let dot_duration = Self::get_dot_duration(text_type, speed as f64, speed_system);
             let short_wave_length = dot_duration * signal_durations.get(&SignalType::Short).copied().unwrap();
             let long_wave_length = dot_duration * signal_durations.get(&SignalType::Long).copied().unwrap();
             let short_silence_length = dot_duration * signal_durations.get(&SignalType::SilenceShort).copied().unwrap();
@@ -343,24 +360,25 @@ impl MorsePlayer {
         audio_vec
     }
 
-    fn get_dot_duration(text_type: TextType, speed: f64) -> Duration { // calculates an absolute speed
+    fn get_dot_duration(text_type: TextType, speed: f64, speed_system: SpeedSystem) -> Duration { // calculates an absolute speed
         let speed_to_use: f64 = match text_type {
-            TextType::Letters => LETTERS_DURATION * 100.0 / speed,
-            TextType::Digits => DIGITS_DURATION * 100.0 / speed,
-            TextType::Mixed => MIXED_DURATION * 100.0 / speed
+            TextType::Letters => if speed_system == SpeedSystem::CODEX { CODEX_DURATION } else { PARIS_DURATION },
+            TextType::Digits => DIGITS_DURATION,
+            TextType::Mixed => ((if speed_system == SpeedSystem::CODEX { CODEX_DURATION } else { PARIS_DURATION }) + DIGITS_DURATION) / 2.0
         };
-        Duration::from_secs_f64(speed_to_use)
+        Duration::from_secs_f64(speed_to_use * 100.0 / speed)
     }
 
     fn get_timings(
         audio_prev_vec: Vec<SignalType>,
         text_type: TextType,
         speed: u32,
+        speed_system: SpeedSystem,
         signal_durations: HashMap<SignalType, u32>,
     ) -> (Duration, Vec<Duration>) {
         let mut timings = Vec::<Duration>::new();
         let mut duration = Duration::from_secs(0);
-        let dot_duration = Self::get_dot_duration(text_type, speed as f64);
+        let dot_duration = Self::get_dot_duration(text_type, speed as f64, speed_system);
         timings.push(duration);
 
         for element in audio_prev_vec {

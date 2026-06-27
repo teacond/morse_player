@@ -179,35 +179,42 @@ impl MorsePlayer {
         (duration, timings)
     }
 
-    pub fn set_volume(&self, volume: f32) {
+    pub fn set_volume(&self, volume: f32) -> &Self {
         self.player.lock().unwrap().set_volume(volume);
+        self
     }
 
-    pub fn set_alphabet(&self, alphabet: Alphabet) {
+    pub fn set_alphabet(&self, alphabet: Alphabet) -> &Self {
         *self.alphabet.borrow_mut() = MORSE_CODE.get(&Alphabet::Latin.to_string()).unwrap().clone();
         if alphabet != Alphabet::Latin {
             self.alphabet.borrow_mut().extend(MORSE_CODE.get(&alphabet.to_string()).unwrap().clone());
         }
+        self
     }
 
-    pub fn set_dot_duration(&self, dot_duration: Duration) {
+    pub fn set_dot_duration(&self, dot_duration: Duration) -> &Self {
         self.dot_duration.set(dot_duration);
+        self
     }
 
-    pub fn set_delay(&self, delay: u32) {
+    pub fn set_delay(&self, delay: u32) -> &Self {
         self.delay.set(delay);
+        self
     }
 
-    pub fn set_frequency(&self, frequency: f32) {
+    pub fn set_frequency(&self, frequency: f32) -> &Self {
         self.frequency.set(frequency);
+        self
     }
 
-    pub fn set_wave_type(&self, wave_type: WaveType) {
+    pub fn set_wave_type(&self, wave_type: WaveType) -> &Self {
         self.wave_type.set(wave_type);
+        self
     }
 
-    pub fn set_sample_rate(&self, sample_rate: u32) {
+    pub fn set_sample_rate(&self, sample_rate: u32) -> &Self {
         self.sample_rate.set(sample_rate);
+        self
     }
 
     pub fn stop(&self) {

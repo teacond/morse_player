@@ -20,7 +20,6 @@ use strum_macros::{Display, EnumString};
 use tokio::runtime::Runtime;
 use std::f32::consts::PI;
 use tokio_util::sync::CancellationToken;
-use derive_more::Debug;
 
 static MORSE_CODE: LazyLock<HashMap<String, HashMap<char, String>>> = LazyLock::new(|| {
     serde_json::from_str(include_str!("morse.json")).unwrap()
@@ -36,20 +35,9 @@ static SIGNAL_DURATIONS: LazyLock<HashMap<SignalType, u32>> = LazyLock::new(|| {
     signal_durations
 });
 
-const CODEX_DURATION: f64 = 0.05;
-const PARIS_DURATION: f64 = 0.06;
-const DIGITS_DURATION: f64 = 0.034;
 const FADE_IN: f32 = 0.0002;
 const FADE_OUT: f32 = 0.0002;
 const SINK_BUFFER_SIZE: u32 = 3;
-
-#[derive(PartialEq, Default, Clone, Copy)]
-pub enum TextType {
-    #[default]
-    Letters,
-    Digits,
-    Mixed,
-}
 
 #[derive(PartialEq, Default, Clone, Copy)]
 pub enum WaveType {
@@ -73,14 +61,7 @@ pub enum Alphabet {
     Korean
 }
 
-#[derive(PartialEq, Display, Default, Clone, Copy, Debug)]
-pub enum SpeedSystem {
-    #[default]
-    CODEX,
-    PARIS
-}
-
-#[derive(PartialEq, Eq, Hash, Clone, Copy, Debug)]
+#[derive(PartialEq, Eq, Hash, Clone, Copy)]
 enum SignalType {
     Short,
     Long,
@@ -150,15 +131,18 @@ impl WaveGenerator {
 }
 
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct MorsePlayer {
-    #[debug(skip)]
     _stream: Rc<MixerDeviceSink>,
-    #[debug(skip)]
     player: Arc<Mutex<Player>>,
     cancellation_token: RefCell<CancellationToken>,
     alphabet: RefCell<HashMap<char, String>>,
-    speed_system: Cell<SpeedSystem>
+    text: Rc<RefCell<String>>,
+    dot_duration: Cell<Duration>,
+    delay: Cell<u32>,
+    frequency: Cell<f32>,
+    wave_type: Cell<WaveType>,
+    sample_rate: Cell<u32>,
 }
 
 impl MorsePlayer {
@@ -172,21 +156,24 @@ impl MorsePlayer {
             _stream: Rc::new(stream),
             player: Arc::new(Mutex::new(sink)),
             cancellation_token: RefCell::new(CancellationToken::new()),
-            alphabet: RefCell::new(HashMap::from(MORSE_CODE.get(&Alphabet::Latin.to_string()).unwrap().clone())),
-            speed_system: Cell::new(SpeedSystem::default())
+            alphabet: RefCell::new(HashMap::from(MORSE_CODE.get(&Alphabet::default().to_string()).unwrap().clone())),
+            text: Rc::new(RefCell::new(String::new())),
+            dot_duration: Cell::new(Duration::from_millis(50)),
+            delay: Cell::new(3),
+            frequency: Cell::new(750.0),
+            wave_type: Cell::new(WaveType::Square),
+            sample_rate: Cell::new(48000),
         };
 
         Ok(morse_player)
     }
 
-    pub fn timings(&self, text: &str, text_type: TextType, speed: u32, delay: u32) -> (Duration, Vec<Duration>) {
-        let signal_durations = Self::update_durations(delay); 
-        let text_preview = Self::get_morse_vec(&self.alphabet.borrow(), text);
+    pub fn timings(&self) -> (Duration, Vec<Duration>) {
+        let signal_durations = Self::update_durations(self.delay.get()); 
+        let text_preview = Self::get_morse_vec(&self.alphabet.borrow(), &self.text.borrow());
         let (duration, timings) = Self::get_timings(
             text_preview,
-            text_type,
-            speed,
-            self.speed_system.get(),
+            self.dot_duration.get(),
             signal_durations,
         );
         (duration, timings)
@@ -196,10 +183,6 @@ impl MorsePlayer {
         self.player.lock().unwrap().set_volume(volume);
     }
 
-    pub fn set_speed_system(&self, speed_system: SpeedSystem) {
-        self.speed_system.set(speed_system);
-    }
-
     pub fn set_alphabet(&self, alphabet: Alphabet) {
         *self.alphabet.borrow_mut() = MORSE_CODE.get(&Alphabet::Latin.to_string()).unwrap().clone();
         if alphabet != Alphabet::Latin {
@@ -207,17 +190,45 @@ impl MorsePlayer {
         }
     }
 
+    pub fn set_text(&self, text: &str) {
+        *self.text.borrow_mut() = text.to_string();
+    }
+
+    pub fn set_dot_duration(&self, dot_duration: Duration) {
+        self.dot_duration.set(dot_duration);
+    }
+
+    pub fn set_delay(&self, delay: u32) {
+        self.delay.set(delay);
+    }
+
+    pub fn set_frequency(&self, frequency: f32) {
+        self.frequency.set(frequency);
+    }
+
+    pub fn set_wave_type(&self, wave_type: WaveType) {
+        self.wave_type.set(wave_type);
+    }
+
+    pub fn set_sample_rate(&self, sample_rate: u32) {
+        self.sample_rate.set(sample_rate);
+    }
+
     pub fn stop(&self) {
         self.cancellation_token.borrow().cancel();
         self.player.lock().unwrap().clear();
     }
 
-    pub fn play(&self, text: &str, text_type: TextType, speed: u32, delay: u32, frequency: f32, wave_type: WaveType, sample_rate: u32) {
-        let text_preview = Self::get_morse_vec(&self.alphabet.borrow(), text);
-        let signal_durations = Self::update_durations(delay); 
+    pub fn play(&self) {
+        let text_preview = Self::get_morse_vec(&self.alphabet.borrow(), &self.text.borrow());
+        let signal_durations = Self::update_durations(self.delay.get()); 
         let player = self.player.clone();
+        let frequency = self.frequency.get();
+        let sample_rate = self.sample_rate.get();
+        let dot_duration = self.dot_duration.get();
+        let wave_type = self.wave_type.get();
+
         let cancellation_token = CancellationToken::new();
-        let speed_system = self.speed_system.get();
         *self.cancellation_token.borrow_mut() = cancellation_token.clone();
 
         player.lock().unwrap().play();
@@ -225,14 +236,12 @@ impl MorsePlayer {
         std::thread::spawn(move || {
             Self::play_audio(
                 text_preview,
-                text_type,
                 player,
                 cancellation_token,
                 signal_durations,
                 frequency,
                 sample_rate,
-                speed,
-                speed_system,
+                dot_duration,
                 wave_type,
             );
         });
@@ -275,14 +284,12 @@ impl MorsePlayer {
 
     fn play_audio(
         text: Vec<SignalType>,
-        text_type: TextType,
         player: Arc<Mutex<Player>>,
         cancellation_token: CancellationToken,
         signal_durations: HashMap<SignalType, u32>,
         frequency: f32,
         sample_rate: u32,
-        speed: u32,
-        speed_system: SpeedSystem,
+        dot_duration: Duration,
         wave_type: WaveType
     ) {
         let rt = Runtime::new().unwrap();
@@ -291,7 +298,6 @@ impl MorsePlayer {
             let mut sound_signal = Vec::<f32>::new();
             let mut samples_duration = Duration::from_secs(0);
 
-            let dot_duration = Self::get_dot_duration(text_type, speed as f64, speed_system);
             let short_wave_length = dot_duration * signal_durations.get(&SignalType::Short).copied().unwrap();
             let long_wave_length = dot_duration * signal_durations.get(&SignalType::Long).copied().unwrap();
             let short_silence_length = dot_duration * signal_durations.get(&SignalType::SilenceShort).copied().unwrap();
@@ -360,25 +366,13 @@ impl MorsePlayer {
         audio_vec
     }
 
-    fn get_dot_duration(text_type: TextType, speed: f64, speed_system: SpeedSystem) -> Duration { // calculates an absolute speed
-        let speed_to_use: f64 = match text_type {
-            TextType::Letters => if speed_system == SpeedSystem::CODEX { CODEX_DURATION } else { PARIS_DURATION },
-            TextType::Digits => DIGITS_DURATION,
-            TextType::Mixed => ((if speed_system == SpeedSystem::CODEX { CODEX_DURATION } else { PARIS_DURATION }) + DIGITS_DURATION) / 2.0
-        };
-        Duration::from_secs_f64(speed_to_use * 100.0 / speed)
-    }
-
     fn get_timings(
         audio_prev_vec: Vec<SignalType>,
-        text_type: TextType,
-        speed: u32,
-        speed_system: SpeedSystem,
+        dot_duration: Duration,
         signal_durations: HashMap<SignalType, u32>,
     ) -> (Duration, Vec<Duration>) {
         let mut timings = Vec::<Duration>::new();
         let mut duration = Duration::from_secs(0);
-        let dot_duration = Self::get_dot_duration(text_type, speed as f64, speed_system);
         timings.push(duration);
 
         for element in audio_prev_vec {

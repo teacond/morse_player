@@ -19,17 +19,20 @@ pub use morse_player::*;
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::time::Duration;
+
+use super::*;
 
     #[test]
     fn test_text_duration() {
         let morse_player = MorsePlayer::new().unwrap();
-        let result = morse_player.timings(
-            "ABCDE",
-            TextType::Letters,
-            100,
-            3
-        ).0;
+        
+        morse_player.set_alphabet(Alphabet::Latin);
+        morse_player.set_text("ABCDE");
+        morse_player.set_dot_duration(Duration::from_millis(50));
+        morse_player.set_delay(3);
+
+        let result = morse_player.timings().0;
         assert_eq!(result.as_secs_f64(), 2.25);
     }
 }

@@ -28,11 +28,10 @@ use super::*;
         let morse_player = MorsePlayer::new().unwrap();
         
         morse_player.set_alphabet(Alphabet::Latin);
-        morse_player.set_text("ABCDE");
         morse_player.set_dot_duration(Duration::from_millis(50));
         morse_player.set_delay(3);
 
-        let result = morse_player.timings().0;
+        let result = morse_player.timings("ABCDE").0;
         assert_eq!(result.as_secs_f64(), 2.25);
     }
 }

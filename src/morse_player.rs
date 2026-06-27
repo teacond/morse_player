@@ -137,7 +137,6 @@ pub struct MorsePlayer {
     player: Arc<Mutex<Player>>,
     cancellation_token: RefCell<CancellationToken>,
     alphabet: RefCell<HashMap<char, String>>,
-    text: Rc<RefCell<String>>,
     dot_duration: Cell<Duration>,
     delay: Cell<u32>,
     frequency: Cell<f32>,
@@ -157,7 +156,6 @@ impl MorsePlayer {
             player: Arc::new(Mutex::new(sink)),
             cancellation_token: RefCell::new(CancellationToken::new()),
             alphabet: RefCell::new(HashMap::from(MORSE_CODE.get(&Alphabet::default().to_string()).unwrap().clone())),
-            text: Rc::new(RefCell::new(String::new())),
             dot_duration: Cell::new(Duration::from_millis(50)),
             delay: Cell::new(3),
             frequency: Cell::new(750.0),
@@ -168,9 +166,9 @@ impl MorsePlayer {
         Ok(morse_player)
     }
 
-    pub fn timings(&self) -> (Duration, Vec<Duration>) {
+    pub fn timings(&self, text: &str) -> (Duration, Vec<Duration>) {
         let signal_durations = Self::update_durations(self.delay.get()); 
-        let text_preview = Self::get_morse_vec(&self.alphabet.borrow(), &self.text.borrow());
+        let text_preview = Self::get_morse_vec(&self.alphabet.borrow(), text);
         let (duration, timings) = Self::get_timings(
             text_preview,
             self.dot_duration.get(),
@@ -188,10 +186,6 @@ impl MorsePlayer {
         if alphabet != Alphabet::Latin {
             self.alphabet.borrow_mut().extend(MORSE_CODE.get(&alphabet.to_string()).unwrap().clone());
         }
-    }
-
-    pub fn set_text(&self, text: &str) {
-        *self.text.borrow_mut() = text.to_string();
     }
 
     pub fn set_dot_duration(&self, dot_duration: Duration) {
@@ -219,8 +213,8 @@ impl MorsePlayer {
         self.player.lock().unwrap().clear();
     }
 
-    pub fn play(&self) {
-        let text_preview = Self::get_morse_vec(&self.alphabet.borrow(), &self.text.borrow());
+    pub fn play(&self, text: &str) {
+        let text_preview = Self::get_morse_vec(&self.alphabet.borrow(), text);
         let signal_durations = Self::update_durations(self.delay.get()); 
         let player = self.player.clone();
         let frequency = self.frequency.get();

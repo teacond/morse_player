@@ -137,11 +137,11 @@ pub struct MorsePlayer {
     player: Arc<Mutex<Player>>,
     cancellation_token: RefCell<CancellationToken>,
     alphabet: RefCell<HashMap<char, String>>,
-    dot_duration: Cell<Duration>,
-    delay: Cell<u32>,
-    frequency: Cell<f32>,
-    wave_type: Cell<WaveType>,
-    sample_rate: Cell<u32>,
+    dot_duration: Rc<Cell<Duration>>,
+    delay: Rc<Cell<u32>>,
+    frequency: Rc<Cell<f32>>,
+    wave_type: Rc<Cell<WaveType>>,
+    sample_rate: Rc<Cell<u32>>,
 }
 
 impl MorsePlayer {
@@ -156,11 +156,11 @@ impl MorsePlayer {
             player: Arc::new(Mutex::new(sink)),
             cancellation_token: RefCell::new(CancellationToken::new()),
             alphabet: RefCell::new(HashMap::from(MORSE_CODE.get(&Alphabet::default().to_string()).unwrap().clone())),
-            dot_duration: Cell::new(Duration::from_millis(50)),
-            delay: Cell::new(3),
-            frequency: Cell::new(750.0),
-            wave_type: Cell::new(WaveType::Square),
-            sample_rate: Cell::new(48000),
+            dot_duration: Rc::new(Cell::new(Duration::from_millis(50))),
+            delay: Rc::new(Cell::new(3)),
+            frequency: Rc::new(Cell::new(750.0)),
+            wave_type: Rc::new(Cell::new(WaveType::Square)),
+            sample_rate: Rc::new(Cell::new(48000)),
         };
 
         Ok(morse_player)

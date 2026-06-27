@@ -416,7 +416,7 @@ dependencies = [
 
 [[package]]
 name = "morse_player"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "derive_more",
  "rodio",

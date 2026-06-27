@@ -20,6 +20,7 @@ use strum_macros::{Display, EnumString};
 use tokio::runtime::Runtime;
 use std::f32::consts::PI;
 use tokio_util::sync::CancellationToken;
+use derive_more::Debug;
 
 static MORSE_CODE: LazyLock<HashMap<String, HashMap<char, String>>> = LazyLock::new(|| {
     serde_json::from_str(include_str!("morse.json")).unwrap()
@@ -39,7 +40,7 @@ const FADE_IN: f32 = 0.0002;
 const FADE_OUT: f32 = 0.0002;
 const SINK_BUFFER_SIZE: u32 = 3;
 
-#[derive(PartialEq, Default, Clone, Copy)]
+#[derive(Debug, PartialEq, Default, Clone, Copy)]
 pub enum WaveType {
     #[default]
     Square,
@@ -70,7 +71,7 @@ enum SignalType {
     SilenceLong
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 struct WaveGenerator {
     wave_type: WaveType,
     phase: Cell<f32>,
@@ -131,9 +132,10 @@ impl WaveGenerator {
 }
 
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct MorsePlayer {
     _stream: Rc<MixerDeviceSink>,
+    #[debug(skip)]
     player: Arc<Mutex<Player>>,
     cancellation_token: RefCell<CancellationToken>,
     alphabet: RefCell<HashMap<char, String>>,
